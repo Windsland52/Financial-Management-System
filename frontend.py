@@ -1,9 +1,10 @@
 import tkinter as tk
-from tkinter import messagebox, filedialog, simpledialog
+from tkinter import messagebox, filedialog, simpledialog, ttk
 from PIL import Image, ImageTk
 import requests
 import json
 import os
+import datetime
 
 # URLs for backend API
 BASE_URL = "http://localhost:5000"
@@ -127,21 +128,79 @@ class App:
         # print(response.text)
         data = response.json()
         try:
-            salary_info = "\n".join([f"Grade: {s['grade']}, Amount: {s['amount']}, Date: {s['date']}" for s in data])
-            messagebox.showinfo("Salary Info", salary_info)
+            salary_info = f"最新薪资等级: {data['grade']}, 更新时间: {data['ts']}"
+            messagebox.showinfo("查看薪资等级", salary_info)
         except:
             messagebox.showerror("Error", data['message'])
 
     def view_salary_statistics(self):
-        user_id = self.get_user_id()
-        period = self.get_period()
-        response = requests.get(STATISTICS_URL, params={"user_id": user_id, "period": period})
-        data = response.json()
+        # 创建新的窗口
+        stat_window = tk.Toplevel(self.root)
+        stat_window.title("View Salary Statistics")
 
-        if response.status_code == 200:
-            statistics_info = "\n".join([f"Period: {s['period']}, Total Amount: {s['total_amount']}" for s in data])
-            messagebox.showinfo("Salary Statistics", statistics_info)
+        # 时间类型选择框
+        time_type_label = ttk.Label(stat_window, text="Select Time Type:")
+        time_type_label.pack(pady=5)
+
+        time_type = tk.StringVar()
+        time_type_combo = ttk.Combobox(stat_window, textvariable=time_type)
+        time_type_combo['values'] = ('Month', 'Quarter', 'Year')
+        time_type_combo.current(0)  # 设置默认值
+        time_type_combo.pack(pady=5)
+
+        # 年份输入框
+        year_label = ttk.Label(stat_window, text="Year:")
+        year_label.pack(pady=5)
+
+        year_entry = ttk.Entry(stat_window)
+        year_entry.pack(pady=5)
+
+        # 月份输入框（仅在选择月份/季度时可见）
+        month_label = ttk.Label(stat_window, text="Month:")
+        month_label.pack(pady=5)
+
+        month_entry = ttk.Entry(stat_window)
+        month_entry.pack(pady=5)
+
+        # 触发选择类型更新
+        time_type.trace('w', lambda *args: self.update_inputs(time_type, month_label, month_entry))
+
+        # 创建获取统计数据按钮
+        fetch_button = ttk.Button(stat_window, text="Fetch Statistics", command=lambda: self.fetch_statistics(time_type, year_entry, month_entry))
+        fetch_button.pack(pady=20)
+
+    def update_inputs(self, time_type, month_label, month_entry):
+        selected_type = time_type.get()
+        if selected_type == 'Month' or selected_type == 'Quarter':
+            month_label.pack(pady=5)
+            month_entry.pack(pady=5)
         else:
+            month_label.pack_forget()
+            month_entry.pack_forget()
+
+    def fetch_statistics(self, time_type, year_entry, month_entry):
+        year = int(year_entry.get())
+        selected_type = time_type.get()
+        date_range = {"year": year}
+        if selected_type == 'Month' or selected_type == 'Quarter':
+            month = int(month_entry.get())
+            if selected_type == 'Month':
+                date_range["month"] = month
+            else:
+                quarter = (month - 1) // 3 + 1
+                date_range["quarter"] = quarter
+
+        response = self.session.post(f"{STATISTICS_URL}", json={"option": selected_type.lower(), "date": date_range})
+        try:
+            data = response.json()
+            if selected_type == 'Month':
+                statistics_info = f"{year}年{month}月薪资：{data['salary']}元"
+            elif selected_type == 'Quarter':
+                statistics_info = f"{year}年第{quarter}季度薪资：{data['salary']}元"
+            else:
+                statistics_info = f"{year}年总薪资：{data['salary']}元"
+            messagebox.showinfo("Salary Statistics", statistics_info)
+        except:
             messagebox.showerror("Error", data['message'])
 
     def submit_report(self):

@@ -37,29 +37,33 @@ Session(app)
 
 # Define models
 class User(db.Model):
-    id = db.Column(db.Integer, primary_key=True)
+    __tablename__ = 'user'
+    
+    user_id = db.Column(db.Integer, primary_key=True)
     username = db.Column(db.String(80), unique=True, nullable=False)
     password = db.Column(db.String(120), nullable=False)
     role = db.Column(db.String(10), nullable=False)  # 'admin', 'finance', 'employee'
-    user_id = db.Column(db.Integer, unique=True, nullable=False)
 
 class Salary(db.Model):
-    id = db.Column(db.Integer, primary_key=True)
-    user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
+    __tablename__ = 'salary'
+    
+    user_id = db.Column(db.Integer, db.ForeignKey('user.user_id'), nullable=False, primary_key=True)
+    ts = db.Column(db.DateTime, nullable=False)
     salary_grade = db.Column(db.String(50), nullable=False)
+    modified_by = db.Column(db.Integer, db.ForeignKey('user.user_id'), nullable=False)
+
+    # Establish a relationship with the User table for the modifier
+    modifier = db.relationship('User', foreign_keys=[modified_by])
+
+    # Optional: Establish a relationship with the User table for the user_id
+    user = db.relationship('User', foreign_keys=[user_id])
+
+class SalaryRelation(db.Model):
+    __tablename__ = 'salary_relation'
+    
+    salary_grade = db.Column(db.String(50), primary_key=True)
     salary_amount = db.Column(db.Float, nullable=False)
-    date = db.Column(db.Date, nullable=False)
 
-class Report(db.Model):
-    id = db.Column(db.Integer, primary_key=True)
-    user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
-    report_content = db.Column(db.Text, nullable=False)
-    date = db.Column(db.Date, nullable=False)
-
-class Permission(db.Model):
-    id = db.Column(db.Integer, primary_key=True)
-    user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
-    permission_level = db.Column(db.String(50), nullable=False)
 
 # Create all tables
 with app.app_context():
@@ -84,7 +88,7 @@ def login():
         session['user_id'] = user.user_id
         session['role'] = user.role
         print('log session', dict(session))
-        return jsonify({'message': 'Logged in successfully!', 'role': user.role, 'user_id': user.id})
+        return jsonify({'message': 'Logged in successfully!', 'role': user.role, 'user_id': user.user_id})
     return jsonify({'message': 'Invalid credentials!'})
 
 def role_required(role):
@@ -126,36 +130,94 @@ def set_salary():
 @app.route('/salary/<int:user_id>', methods=['GET'])
 def get_salary(user_id):
     user = User.query.filter_by(user_id=user_id).first()
+    if user is None:
+        return jsonify({'message': 'User not found!'}), 404
+    
+    # Check for employee role and access permissions
     if user.role == 'employee' and user.user_id != user_id:
         return jsonify({'message': 'Access denied!'}), 403
     
-    salaries = Salary.query.filter_by(user_id=user_id).all()
-    return jsonify([{'grade': s.salary_grade, 'amount': s.salary_amount, 'date': s.date} for s in salaries])
-
-@app.route('/salary/statistics', methods=['GET'])
-def salary_statistics():
-    user_id = request.args.get('user_id')
-    if session['role'] == 'employee' and session['user_id'] != int(user_id):
-        return jsonify({'message': 'Access denied!'}), 403
-    period = request.args.get('period')  # 'monthly', 'quarterly', 'yearly'
-
-    if period == 'monthly':
-        salaries = db.session.query(
-            db.func.date_trunc('month', Salary.date).label('period'), 
-            db.func.sum(Salary.salary_amount).label('total_amount')
-        ).group_by('period').filter_by(user_id=user_id).all()
-    elif period == 'quarterly':
-        salaries = db.session.query(
-            db.func.date_trunc('quarter', Salary.date).label('period'), 
-            db.func.sum(Salary.salary_amount).label('total_amount')
-        ).group_by('period').filter_by(user_id=user_id).all()
-    elif period == 'yearly':
-        salaries = db.session.query(
-            db.func.date_trunc('year', Salary.date).label('period'), 
-            db.func.sum(Salary.salary_amount).label('total_amount')
-        ).group_by('period').filter_by(user_id=user_id).all()
+    # Query for the latest salary entry
+    latest_salary = Salary.query.filter_by(user_id=user_id).order_by(Salary.ts.desc()).first()
     
-    return jsonify([{'period': str(s.period), 'total_amount': s.total_amount} for s in salaries])
+    if latest_salary is None:
+        return jsonify({'message': 'No salary data found for the user!'}), 404
+    
+    return jsonify({'grade': latest_salary.salary_grade, 'ts': latest_salary.ts})
+
+@app.route('/salary/statistics', methods=['POST'])
+def salary_statistics():
+    data = request.get_json()
+    user_id = session['user_id']
+    # if session['role'] == 'employee' and session['user_id'] != int(user_id):
+    #     return jsonify({'message': 'Access denied!'}), 403
+    option = data['option']  # 'monthly', 'quarterly', 'yearly'
+    date = data['date']
+    year = date['year']
+
+
+    user = User.query.filter_by(user_id=user_id).first()
+    print(data)
+    # 加载 Excel 文件
+    file_path = f'reports/salary-{year}.xlsx'
+    if option =='month':
+        month = date['month']
+        try:
+            df = pd.read_excel(file_path, sheet_name=f'{month}月')
+        except Exception as e:
+            return jsonify({'message': 'Failed to read Excel file', 'error': str(e)}), 400
+
+        # 搜索名字所在的行
+        name_to_search = user.username
+        searched_row = df[df.iloc[:, 0] == name_to_search]
+        if not searched_row.empty:
+            # 获取该名字所在行的某列值（例如，第三列）
+            col_index = 1  # 第三列的索引为2
+            cell_value = searched_row.iloc[0, col_index]
+            # 转换为基本数据类型
+            cell_value = cell_value.item() if hasattr(cell_value, 'item') else cell_value
+            return jsonify({'salary': cell_value})
+        else:
+            return jsonify({'message': 'Salary data not found for the user!'}), 404
+    elif option == 'quarter':
+        quarter = date['quarter']
+        try:
+            df = pd.read_excel(file_path, sheet_name='总表')
+        except Exception as e:
+            return jsonify({'message': 'Failed to read Excel file', 'error': str(e)}), 400
+
+        # 搜索名字所在的行
+        name_to_search = user.username
+        searched_row = df[df.iloc[:, 0] == name_to_search]
+        if not searched_row.empty:
+            # 获取该名字所在行的某列值（例如，第三列）
+            col_index = quarter  # 第三列的索引为2
+            cell_value = searched_row.iloc[0, col_index]
+            # 转换为基本数据类型
+            cell_value = cell_value.item() if hasattr(cell_value, 'item') else cell_value
+            return jsonify({'salary': cell_value})
+        else:
+            return jsonify({'message': 'Salary data not found for the user!'}), 404
+    elif option == 'year':
+        try:
+            df = pd.read_excel(file_path, sheet_name='总表')
+        except Exception as e:
+            return jsonify({'message': 'Failed to read Excel file', 'error': str(e)}), 400
+
+        # 搜索名字所在的行
+        name_to_search = user.username
+        searched_row = df[df.iloc[:, 0] == name_to_search]
+        if not searched_row.empty:
+            # 获取该名字所在行的某列值（例如，第三列）
+            col_index = 5  # 第三列的索引为2
+            cell_value = searched_row.iloc[0, col_index]
+            # 转换为基本数据类型
+            cell_value = cell_value.item() if hasattr(cell_value, 'item') else cell_value
+            return jsonify({'salary': cell_value})
+        else:
+            return jsonify({'message': 'Salary data not found for the user!'}), 404
+    else:
+        return jsonify({'message': 'Invalid option!'}), 400
 
 def allowed_file(filename):
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in app.config['ALLOWED_EXTENSIONS']
@@ -186,11 +248,6 @@ def submit_report():
     else:
         return jsonify({'message': 'Invalid file type'}), 400
 
-# @app.route('/reports', methods=['GET'])
-# @role_required('admin')
-# def get_reports():
-#     reports = Report.query.all()
-#     return jsonify([{'user_id': r.user_id, 'content': r.report_content, 'date': r.date} for r in reports])
 
 @app.route('/permission', methods=['POST'])
 @role_required('admin')
@@ -215,11 +272,6 @@ def set_permission():
         db.session.rollback()
         return jsonify({'message': 'Failed to update role', 'error': str(e)}), 500
 
-# @app.route('/permission/<int:user_id>', methods=['GET'])
-# @role_required('admin')
-# def get_permission(user_id):
-#     permission = Permission.query.filter_by(user_id=user_id).first()
-#     return jsonify({'user_id': permission.user_id, 'level': permission.permission_level})
 
 if __name__ == '__main__':
     app.run(debug=True)
