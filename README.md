@@ -30,7 +30,7 @@
 - 关系表
 | 中文 | 表名 | 字段 |
 | --- | --- | --- |
-| 用户表 | users | user_id, username, password, role |
+| 用户表 | user | user_id, username, password, role |
 | 薪资等级表 | salary | user_id, ts, salary_grade, modified_by |
 | 薪资关系表 | salary_relation | salary_grade, salary_amount |
 另外俩表暂时不用。
@@ -81,3 +81,244 @@ python backend.py
 
 1. 检查前后端端口是否有问题
 2. 后端部署在远程服务器，需要在防火墙开放端口，如5000端口
+
+# 开发文档
+
+## 后端
+
+### 数据库的连接
+
+```python
+class User(db.Model):
+    __tablename__ = 'user'
+    
+    user_id = db.Column(db.Integer, primary_key=True)
+    username = db.Column(db.String(80), unique=True, nullable=False)
+    password = db.Column(db.String(120), nullable=False)
+    role = db.Column(db.String(10), nullable=False)  # 'admin', 'finance', 'employee'
+
+class Salary(db.Model):
+    __tablename__ = 'salary'
+    
+    user_id = db.Column(db.Integer, db.ForeignKey('user.user_id'), nullable=False, primary_key=True)
+    ts = db.Column(db.DateTime, nullable=False)
+    salary_grade = db.Column(db.String(50), nullable=False)
+    modified_by = db.Column(db.Integer, db.ForeignKey('user.user_id'), nullable=False)
+
+    # Establish a relationship with the User table for the modifier
+    modifier = db.relationship('User', foreign_keys=[modified_by])
+
+    # Optional: Establish a relationship with the User table for the user_id
+    user = db.relationship('User', foreign_keys=[user_id])
+
+class SalaryRelation(db.Model):
+    __tablename__ = 'salary_relation'
+    
+    salary_grade = db.Column(db.String(50), primary_key=True)
+    salary_amount = db.Column(db.Float, nullable=False)
+    
+# Create all tables
+with app.app_context():
+    db.create_all()
+```
+
+## 登录
+
+```python
+@app.route('/login', methods=['POST'])
+def login():
+    data = request.get_json()
+    user = User.query.filter_by(username=data['username'], password=data['password']).first()
+    # if user and check_password_hash(user.password, data['password']):
+    if user and user.password == data['password']:
+        session['user_id'] = user.user_id
+        session['role'] = user.role
+        print('log session', dict(session))
+        return jsonify({'message': 'Logged in successfully!', 'role': user.role, 'user_id': user.user_id})
+    return jsonify({'message': 'Invalid credentials!'})
+```
+
+## 获取当前薪资等级
+
+```python
+@app.route('/salary/<int:user_id>', methods=['GET'])
+def get_salary(user_id):
+    user = User.query.filter_by(user_id=user_id).first()
+    if user is None:
+        return jsonify({'message': 'User not found!'}), 404
+    
+    # Check for employee role and access permissions
+    if user.role == 'employee' and user.user_id != user_id:
+        return jsonify({'message': 'Access denied!'}), 403
+    
+    # Query for the latest salary entry
+    latest_salary = Salary.query.filter_by(user_id=user_id).order_by(Salary.ts.desc()).first()
+    
+    if latest_salary is None:
+        return jsonify({'message': 'No salary data found for the user!'}), 404
+    
+    return jsonify({'grade': latest_salary.salary_grade, 'ts': latest_salary.ts})
+```
+
+## 薪资统计
+
+```python
+@app.route('/salary/statistics', methods=['POST'])
+def salary_statistics():
+    data = request.get_json()
+    user_id = session['user_id']
+    # if session['role'] == 'employee' and session['user_id'] != int(user_id):
+    #     return jsonify({'message': 'Access denied!'}), 403
+    option = data['option']  # 'monthly', 'quarterly', 'yearly'
+    date = data['date']
+    year = date['year']
+
+
+    user = User.query.filter_by(user_id=user_id).first()
+    if user is None:
+        return jsonify({'message': 'User not found!'}), 404
+    print(data)
+    # 加载 Excel 文件
+    file_path = f'reports/salary-{year}.xlsx'
+    if option =='month':
+        month = date['month']
+        try:
+            df = pd.read_excel(file_path, sheet_name=f'{month}月')
+        except Exception as e:
+            return jsonify({'message': 'Failed to read Excel file', 'error': str(e)}), 400
+
+        # 搜索名字所在的行
+        name_to_search = user.username
+        searched_row = df[df.iloc[:, 0] == name_to_search]
+        if not searched_row.empty:
+            # 获取该名字所在行的某列值（例如，第三列）
+            col_index = 1  # 第三列的索引为2
+            cell_value = searched_row.iloc[0, col_index]
+            # 转换为基本数据类型
+            cell_value = cell_value.item() if hasattr(cell_value, 'item') else cell_value
+            return jsonify({'salary': cell_value})
+        else:
+            return jsonify({'message': 'Salary data not found for the user!'}), 404
+    elif option == 'quarter':
+        quarter = date['quarter']
+        try:
+            df = pd.read_excel(file_path, sheet_name='总表')
+        except Exception as e:
+            return jsonify({'message': 'Failed to read Excel file', 'error': str(e)}), 400
+
+        # 搜索名字所在的行
+        name_to_search = user.username
+        searched_row = df[df.iloc[:, 0] == name_to_search]
+        if not searched_row.empty:
+            # 获取该名字所在行的某列值（例如，第三列）
+            col_index = quarter  # 第三列的索引为2
+            cell_value = searched_row.iloc[0, col_index]
+            # 转换为基本数据类型
+            cell_value = cell_value.item() if hasattr(cell_value, 'item') else cell_value
+            return jsonify({'salary': cell_value})
+        else:
+            return jsonify({'message': 'Salary data not found for the user!'}), 404
+    elif option == 'year':
+        try:
+            df = pd.read_excel(file_path, sheet_name='总表')
+        except Exception as e:
+            return jsonify({'message': 'Failed to read Excel file', 'error': str(e)}), 400
+
+        # 搜索名字所在的行
+        name_to_search = user.username
+        searched_row = df[df.iloc[:, 0] == name_to_search]
+        if not searched_row.empty:
+            # 获取该名字所在行的某列值（例如，第三列）
+            col_index = 5  # 第三列的索引为2
+            cell_value = searched_row.iloc[0, col_index]
+            # 转换为基本数据类型
+            cell_value = cell_value.item() if hasattr(cell_value, 'item') else cell_value
+            return jsonify({'salary': cell_value})
+        else:
+            return jsonify({'message': 'Salary data not found for the user!'}), 404
+    else:
+        return jsonify({'message': 'Invalid option!'}), 400
+```
+
+## 设置薪资等级（finance）
+
+```python
+@app.route('/salary', methods=['POST'])
+@role_required('finance')
+def set_salary():
+    data = request.get_json()
+    salary = Salary.query.filter_by(user_id=data['user_id']).first()
+    if not salary:
+        return jsonify({'message': 'People not found'}), 404
+
+    salary.salary_grade = data['salary_grade']
+    salary.modified_by = session['user_id']
+    salary.ts = datetime.now().replace(microsecond=0)
+    try:
+        db.session.commit()
+        return jsonify({'message': 'Salary updated successfully!'}), 200
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({'message': 'Failed to update salary', 'error': str(e)}), 500
+```
+
+## 提交财务报表（finance）
+
+```python
+@app.route('/report', methods=['POST'])
+@role_required('finance')
+def submit_report():
+    if 'file' not in request.files:
+        return jsonify({'message': 'No file part'}), 400
+    file = request.files['file']
+    if file.filename == '':
+        return jsonify({'message': 'No selected file'}), 400
+    # 确保 file.filename 是一个有效的字符串
+    if not isinstance(file.filename, str):
+        return jsonify({'message': 'Invalid file type'}), 400
+    if file and allowed_file(file.filename):
+        filename = secure_filename(file.filename)
+        filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
+        file.save(filepath)
+        print('File saved to:', filepath)
+        # 检查文件是否存在
+        if not os.path.exists(filepath):
+            return jsonify({'message': 'Failed to save file'}), 400
+        try:
+            # 尝试使用 pandas 读取文件
+            df = pd.read_excel(filepath)
+            return jsonify({'message': 'File is uploaded successfully'}), 200
+        except Exception as e:
+            print('Error reading Excel file:', str(e))
+            return jsonify({'message': 'Invalid Excel file', 'error': str(e)}), 400
+    else:
+        return jsonify({'message': 'Invalid file type'}), 400
+```
+
+## 设置权限（admin）
+
+```python
+@app.route('/permission', methods=['POST'])
+@role_required('admin')
+def set_permission():
+    data = request.get_json()
+    user_id = data.get('user_id')
+    new_role = data.get('role')
+
+    if not user_id or not new_role:
+        return jsonify({'message': 'User ID and role are required'}), 400
+    
+    user = User.query.filter_by(user_id=user_id).first()
+    if not user:
+        return jsonify({'message': 'User not found'}), 404
+    
+    user.role = new_role
+    
+    try:
+        db.session.commit()
+        return jsonify({'message': 'Role updated successfully'}), 200
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({'message': 'Failed to update role', 'error': str(e)}), 500
+```
+

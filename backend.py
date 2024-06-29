@@ -95,29 +95,12 @@ def role_required(role):
         return decorated_function
     return decorator
 
+# 查询所有用户（无用）
 @app.route('/users', methods=['GET'])
 @role_required('admin')
 def get_users():
     users = User.query.all()
     return jsonify([user.username for user in users])
-
-@app.route('/salary', methods=['POST'])
-@role_required('finance')
-def set_salary():
-    data = request.get_json()
-    salary = Salary.query.filter_by(user_id=data['user_id']).first()
-    if not salary:
-        return jsonify({'message': 'People not found'}), 404
-
-    salary.salary_grade = data['salary_grade']
-    salary.modified_by = session['user_id']
-    salary.ts = datetime.now().replace(microsecond=0)
-    try:
-        db.session.commit()
-        return jsonify({'message': 'Salary updated successfully!'}), 200
-    except Exception as e:
-        db.session.rollback()
-        return jsonify({'message': 'Failed to update salary', 'error': str(e)}), 500
 
 @app.route('/salary/<int:user_id>', methods=['GET'])
 def get_salary(user_id):
@@ -215,6 +198,24 @@ def salary_statistics():
 
 def allowed_file(filename):
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in app.config['ALLOWED_EXTENSIONS']
+
+@app.route('/salary', methods=['POST'])
+@role_required('finance')
+def set_salary():
+    data = request.get_json()
+    salary = Salary.query.filter_by(user_id=data['user_id']).first()
+    if not salary:
+        return jsonify({'message': 'People not found'}), 404
+
+    salary.salary_grade = data['salary_grade']
+    salary.modified_by = session['user_id']
+    salary.ts = datetime.now().replace(microsecond=0)
+    try:
+        db.session.commit()
+        return jsonify({'message': 'Salary updated successfully!'}), 200
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({'message': 'Failed to update salary', 'error': str(e)}), 500
 
 @app.route('/report', methods=['POST'])
 @role_required('finance')
