@@ -1,28 +1,33 @@
-import tkinter as tk
-from tkinter import ttk
-from tkcalendar import Calendar
+import requests
+from tkinter import messagebox
 
-def on_date_select():
-    selected_date = cal.selection_get()
-    print(type(selected_date))
-    print("Selected Date:", selected_date)
-    result_label.config(text=f"Selected Date: {selected_date}")
+BASE_URL = "http://43.143.217.242:5000"
+LOGIN_URL = f"{BASE_URL}/login"
+TEST_URL = f"{BASE_URL}/test"
 
-# 创建主窗口
-root = tk.Tk()
-root.title("Date Picker")
+def test_api():
+    username = "admin"
+    password = "admin"
+    session = requests.Session()
+    
+    # Login request
+    response = session.post(LOGIN_URL, json={"username": username, "password": password})
 
-# 创建日历小部件
-cal = Calendar(root, selectmode='day', year=2024, month=6, day=23)
-cal.pack(pady=20)
+    if response:
+        messagebox.showinfo("Success", "Login successful")
+        
+        # Check cookies
+        print("Cookies after login:", session.cookies)
 
-# 创建选择按钮
-select_button = ttk.Button(root, text="Select Date", command=on_date_select)
-select_button.pack(pady=20)
+        # Test API request
+        response = session.get(TEST_URL)
+        print("Cookies after test API:", session.cookies)
 
-# 创建显示选择日期的标签
-result_label = ttk.Label(root, text="")
-result_label.pack(pady=20)
+        
+        messagebox.showinfo("Success", "API test successful")
+        print("Response from test API:", response.text)
+    else:
+        messagebox.showerror("Error", "Login failed")
 
-# 运行主循环
-root.mainloop()
+if __name__ == "__main__":
+    test_api()

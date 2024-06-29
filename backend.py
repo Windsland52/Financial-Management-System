@@ -20,6 +20,8 @@ DATABASE_NAME = os.getenv('DATABASE_NAME', 'finance_management')
 
 app.config['SQLALCHEMY_DATABASE_URI'] = f'postgresql://{DATABASE_USER}:{DATABASE_PASSWORD}@{DATABASE_HOST}:{DATABASE_PORT}/{DATABASE_NAME}'
 app.config['SECRET_KEY'] = 'supersecretkey'
+app.config['SESSION_PERMANENT'] = True  # 确保会话是永久的
+app.config['PERMANENT_SESSION_LIFETIME'] = 3600  # 设置会话的生命周期（秒）
 app.config['SESSION_COOKIE_SECURE'] = False  # 仅在开发环境中设置为 False，生产环境中应设置为 True
 app.config['SESSION_COOKIE_HTTPONLY'] = True
 app.config['SESSION_TYPE'] = 'filesystem'  # 确保会话存储在服务器端
@@ -31,9 +33,7 @@ if not os.path.exists(app.config['UPLOAD_FOLDER']):
 
 db = SQLAlchemy(app)
 CORS(app, supports_credentials=True)  # 允许发送凭据（如会话 cookie）
-
-# 初始化会话
-Session(app)
+Session(app)  # 启用服务器端会话
 
 # Define models
 class User(db.Model):
@@ -69,15 +69,6 @@ class SalaryRelation(db.Model):
 with app.app_context():
     db.create_all()
 
-# Define routes and handlers
-# @app.route('/register', methods=['POST'])
-# def register():
-#     data = request.get_json()
-#     hashed_password = generate_password_hash(data['password'], method='sha256')
-#     new_user = User(username=data['username'], password=hashed_password, role=data['role'], user_id=data['user_id'])
-#     db.session.add(new_user)
-#     db.session.commit()
-#     return jsonify({'message': 'New user created!'})
 
 @app.route('/login', methods=['POST'])
 def login():
@@ -114,12 +105,13 @@ def get_users():
 @role_required('finance')
 def set_salary():
     data = request.get_json()
-    salary = Salary.query.filter_by(user_id=data['user_id'], date=datetime.strptime(data['date'], '%Y-%m-%d').date()).first()
+    salary = Salary.query.filter_by(user_id=data['user_id']).first()
     if not salary:
-        return jsonify({'message': 'Salary record not found'}), 404
+        return jsonify({'message': 'People not found'}), 404
 
     salary.salary_grade = data['salary_grade']
-    
+    salary.modified_by = session['user_id']
+    salary.ts = datetime.now().replace(microsecond=0)
     try:
         db.session.commit()
         return jsonify({'message': 'Salary updated successfully!'}), 200
@@ -157,6 +149,8 @@ def salary_statistics():
 
 
     user = User.query.filter_by(user_id=user_id).first()
+    if user is None:
+        return jsonify({'message': 'User not found!'}), 404
     print(data)
     # 加载 Excel 文件
     file_path = f'reports/salary-{year}.xlsx'
@@ -230,6 +224,9 @@ def submit_report():
     file = request.files['file']
     if file.filename == '':
         return jsonify({'message': 'No selected file'}), 400
+    # 确保 file.filename 是一个有效的字符串
+    if not isinstance(file.filename, str):
+        return jsonify({'message': 'Invalid file type'}), 400
     if file and allowed_file(file.filename):
         filename = secure_filename(file.filename)
         filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
@@ -274,4 +271,4 @@ def set_permission():
 
 
 if __name__ == '__main__':
-    app.run(debug=True)
+    app.run(host='0.0.0.0', port=5000)
